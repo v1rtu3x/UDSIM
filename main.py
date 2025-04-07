@@ -74,50 +74,104 @@ def handle_can_message(msg):
     # Convert CAN data to a list for easier handling  
     data = list(msg.data)
     
-    if len(data) < 1:
+    if len(data) < 2:  # Need at least PCI byte and service ID
+        print("[WARNING] Message too short, missing PCI or service ID")
         return
     
-    # Extract the service ID (first byte)
-    service_id = data[0]
+    # Extract PCI and calculate expected length
+    pci = data[0]
     
-    print(f"[RECV] ID: 0x{msg.arbitration_id:X} Data: {[hex(b) for b in data]}")
-    
-    # Handle specific service IDs
-    if service_id == 0x11:  # ECU Reset service
-        if len(data) >= 2:
-            reset_type = data[1]
-            handle_reset_response(reset_type)
+    # For single frames, the high nibble should be 0 and low nibble is length
+    if (pci & 0xF0) == 0x00:  # Single frame
+        data_length = pci & 0x0F
+        
+        # Verify message length matches PCI
+        if len(data) < data_length + 1:  # +1 for PCI byte itself
+            print(f"[WARNING] Invalid message length. PCI indicates {data_length} bytes but got {len(data)-1}")
+            return
+        
+        # Extract the service ID (second byte for UDS)
+        service_id = data[1]
+        
+        print(f"[RECV] ID: 0x{msg.arbitration_id:X} PCI: 0x{pci:02X} Service: 0x{service_id:02X} Data: {[hex(b) for b in data]}")
+        
+        # Handle specific service IDs
+        if service_id == 0x11:  # ECU Reset service
+            if data_length >= 2:  # Need at least service ID + reset type
+                reset_type = data[2]  # Reset type is the 3rd byte (after PCI and service ID)
+                handle_reset_response(reset_type)
+            else:
+                # Not enough data for reset type
+                send_negative_response(service_id, 0x13)  # Incorrect message length
+        elif service_id == 0x22:  # Read Data By ID
+            if data_length >= 3:  # Need service ID + 2 bytes for data ID
+                data_id = (data[2] << 8) | data[3]  # Combine two bytes into a 16-bit value
+                print(f"[INFO] Read Data ID request: 0x{data_id:04X}")
+                handle_read_data_id(data_id)
+            else:
+                # Not enough data for data ID
+                send_negative_response(service_id, 0x13)  # Incorrect message length
         else:
-            # Not enough data for reset type
-            send_negative_response(service_id, 0x13)  # Incorrect message length
+            # Unsupported service
+            send_negative_response(service_id, 0x11)  # Service not supported
     else:
-        # Unsupported service
-        send_negative_response(service_id, 0x11)  # Service not supported
+        print(f"[WARNING] Unsupported PCI format: 0x{pci:02X}")
+        # Could handle multi-frame messages here if needed
 
 # 4. Function to handle reset responses
 def handle_reset_response(reset_type):
     """Handle UDS ECU Reset service and send appropriate response"""
     if reset_type == 0x01:  # Hard reset
         print("[INFO] Processing Hard Reset request")
-        time.sleep(1)  # Simulate processing time
-        send_can_frame(ARB_ID_RESPONSE, [0x51, 0x01])
+        time.sleep(0.5)  # Simulate processing time
+        
+        # Send response with PCI byte (0x02 = length 2 bytes following)
+        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x01])
     elif reset_type == 0x02:  # Key Off/On reset
         print("[INFO] Processing Key Off/On Reset request")
-        time.sleep(1.5)  # Simulate processing time
-        send_can_frame(ARB_ID_RESPONSE, [0x51, 0x02])
+        time.sleep(0.5)  # Simulate processing time
+        
+        # Send response with PCI byte (0x02 = length 2 bytes following)
+        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x02])
     elif reset_type == 0x03:  # Soft reset
         print("[INFO] Processing Soft Reset request")
         time.sleep(0.5)  # Simulate processing time
-        send_can_frame(ARB_ID_RESPONSE, [0x51, 0x03])
+        
+        # Send response with PCI byte (0x02 = length 2 bytes following)
+        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x03])
     else:
         # Invalid reset type
         print(f"[WARNING] Invalid reset type: 0x{reset_type:02X}")
         send_negative_response(0x11, 0x31)  # Request out of range
 
+# 5. Function to handle Read Data By ID requests
+def handle_read_data_id(data_id):
+    """Handle UDS Read Data By ID service and send appropriate response"""
+    print(f"[DEBUG] Processing data ID: 0x{data_id:04X}")
+    
+    if data_id == 0xF190:  # VIN (Vehicle Identification Number)
+        print("[INFO] Processing VIN request")
+        time.sleep(0.1)  # Small delay
+
+        # Send multi-frame response for VIN
+        # First frame: includes service response 0x62, data ID 0xF190, and first bytes of VIN
+        send_can_frame(ARB_ID_RESPONSE, [0x10, 0x14, 0x62, 0xF1, 0x90, 0x55, 0x54, 0x43])
+        time.sleep(0.125)  # Delay between frames
+        
+        # Consecutive frames with remaining VIN bytes
+        send_can_frame(ARB_ID_RESPONSE, [0x21, 0x6E, 0x4D, 0x55, 0x53, 0x54, 0x57, 0x49])
+        time.sleep(0.125)
+        send_can_frame(ARB_ID_RESPONSE, [0x22,  0x4E, 0x48, 0x54, 0x42, 0x43, 0x54, 0x46])
+    else: 
+        # Invalid ID
+        print(f"[WARNING] Invalid data ID: 0x{data_id:04X}")
+        send_negative_response(0x22, 0x31)  # Request out of range
+
 # Helper function to send negative responses
 def send_negative_response(service_id, error_code):
-    """Send a UDS negative response"""
-    send_can_frame(ARB_ID_RESPONSE, [0x7F, service_id, error_code])
+    """Send a UDS negative response with proper PCI"""
+    # PCI byte (0x03 = length 3 bytes following) + Negative Response (0x7F) + Service ID + Error Code
+    send_can_frame(ARB_ID_RESPONSE, [0x03, 0x7F, service_id, error_code])
     print(f"[RESPONSE] Negative response for service 0x{service_id:02X}: Error 0x{error_code:02X}")
 
 # Signal handler for clean exit
@@ -131,7 +185,7 @@ def signal_handler(sig, frame):
 def main():
     global bus
     
-    print("[INFO] Starting UDS ECU Reset simulation")
+    print("[INFO] Starting UDS ECU simulation with PCI")
     
     # Register signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
