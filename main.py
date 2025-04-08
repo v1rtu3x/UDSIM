@@ -10,6 +10,11 @@ VCAN_INTERFACE = "vcan0"
 ARB_ID_REQUEST = 0x7E0  # Tester → ECU
 ARB_ID_RESPONSE = 0x7E8  # ECU → Tester
 
+# Global variables to track current session and security status
+current_session = 0x01  # Default to standard session
+security_level = 0x00   # Not authenticated by default
+last_seed = 0           # Store the last generated seed
+
 # 1. Setup function to initialize the vcan interface
 def setup_vcan():
     """Setup the virtual CAN (vcan) interface"""
@@ -64,7 +69,166 @@ def send_can_frame(arb_id, data):
         print(f"[ERROR] Failed to send CAN frame: {e}")
         return False
 
-# 3. Handler function to process incoming CAN frames
+# Function to handle Diagnostic Session Control (0x10)
+def handle_session_control(session_type):
+    """Handle UDS Diagnostic Session Control service and send appropriate response"""
+    global current_session, security_level
+    
+    print(f"[INFO] Processing Session Control request: 0x{session_type:02X}")
+    
+    if session_type in [0x01, 0x02, 0x03, 0x04]:
+        # Valid session types:
+        # 0x01 - Default/Standard Session
+        # 0x02 - Programming Session
+        # 0x03 - Extended Diagnostic Session
+        # 0x04 - Safety System Diagnostic Session
+        
+        # Update the current session
+        current_session = session_type
+        
+        # P2_server and P2*_server timing parameters (in milliseconds)
+        # You can adjust these values as needed
+        p2_server = 50
+        p2_star_server = 5000
+        
+        # Format: [length, positive response SID, session type, P2 high byte, P2 low byte, P2* high byte, P2* low byte]
+        response_data = [0x06, 0x50, session_type, 
+                        (p2_server >> 8) & 0xFF, p2_server & 0xFF,
+                        (p2_star_server >> 8) & 0xFF, p2_star_server & 0xFF]
+        
+        # Send positive response
+        send_can_frame(ARB_ID_RESPONSE, response_data)
+        print(f"[RESPONSE] Changed to session type: 0x{session_type:02X}")
+        
+        # Reset security level when changing sessions (as per ISO 14229-1)
+        if security_level != 0x00:
+            security_level = 0x00
+            print("[INFO] Security access reset due to session change")
+    else:
+        # Invalid session type
+        print(f"[WARNING] Invalid session type: 0x{session_type:02X}")
+        send_negative_response(0x10, 0x31)  # Request out of range
+
+# Function to handle Security Access (0x27)
+def handle_security_access(subfunction, data=None):
+    """Handle UDS Security Access service with seed/key mechanism"""
+    global security_level, last_seed, current_session
+    
+    print(f"[DEBUG] Security Access subfunction: 0x{subfunction:02X}, Current session: 0x{current_session:02X}")
+    
+    # Check session permissions - Security Access typically not allowed in default session
+    if current_session != 0x01:
+        print("[WARNING] Security Access not allowed in default session")
+        send_negative_response(0x27, 0x7F)  # Service not supported in current session
+        return
+    
+    # Check if this is a requestSeed (0x01) or sendKey (0x02)
+    if subfunction == 0x01:  # requestSeed
+        # Generate a random seed
+        seed_value = random.randint(0, 0xFFFFFFFF)
+        last_seed = seed_value
+        
+        # Format seed as 4 bytes
+        seed_bytes = [(seed_value >> 24) & 0xFF, 
+                      (seed_value >> 16) & 0xFF, 
+                      (seed_value >> 8) & 0xFF, 
+                      seed_value & 0xFF]
+        
+        # Response: [length, positive response SID, subfunction, seed bytes...]
+        response_data = [0x06, 0x67, subfunction] + seed_bytes
+        send_can_frame(ARB_ID_RESPONSE, response_data)
+        print(f"[RESPONSE] Sent seed: 0x{seed_value:08X}")
+    
+    elif subfunction == 0x02:  # sendKey
+        if last_seed == 0:
+            # No seed was requested first
+            send_negative_response(0x27, 0x24)  # Request sequence error
+            return
+        
+        if not data or len(data) < 4:
+            # Key data is too short
+            print(f"[WARNING] Key data missing or too short: {data}")
+            send_negative_response(0x27, 0x13)  # Incorrect message length or format
+            return
+        
+        # Extract key value from data (4 bytes)
+        key_value = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
+        expected_key = (last_seed + 1) & 0xFFFFFFFF  # Simple algorithm: seed + 1
+        
+        print(f"[DEBUG] Received key: 0x{key_value:08X}, Expected: 0x{expected_key:08X}")
+        
+        if key_value == expected_key:
+            # Key is correct
+            security_level = 0x01  # Set security level to unlocked
+            send_can_frame(ARB_ID_RESPONSE, [0x02, 0x67, subfunction])
+            print(f"[RESPONSE] Security access granted")
+        else:
+            # Invalid key
+            send_negative_response(0x27, 0x35)  # Invalid key
+            print(f"[RESPONSE] Invalid key")
+    
+    else:
+        # Unsupported subfunction
+        print(f"[WARNING] Unsupported security subfunction: 0x{subfunction:02X}")
+        send_negative_response(0x27, 0x12)  # Subfunction not supported
+
+# Function to handle reset responses
+def handle_reset_response(reset_type):
+    """Handle UDS ECU Reset service and send appropriate response"""
+    if reset_type == 0x01:  # Hard reset
+        print("[INFO] Processing Hard Reset request")
+        time.sleep(0.5)  # Simulate processing time
+        
+        # Send response with PCI byte (0x02 = length 2 bytes following)
+        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x01])
+    elif reset_type == 0x02:  # Key Off/On reset
+        print("[INFO] Processing Key Off/On Reset request")
+        time.sleep(0.5)  # Simulate processing time
+        
+        # Send response with PCI byte (0x02 = length 2 bytes following)
+        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x02])
+    elif reset_type == 0x03:  # Soft reset
+        print("[INFO] Processing Soft Reset request")
+        time.sleep(0.5)  # Simulate processing time
+        
+        # Send response with PCI byte (0x02 = length 2 bytes following)
+        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x03])
+    else:
+        # Invalid reset type
+        print(f"[WARNING] Invalid reset type: 0x{reset_type:02X}")
+        send_negative_response(0x11, 0x31)  # Request out of range
+
+# Function to handle Read Data By ID requests
+def handle_read_data_id(data_id):
+    """Handle UDS Read Data By ID service and send appropriate response"""
+    print(f"[DEBUG] Processing data ID: 0x{data_id:04X}")
+    
+    if data_id == 0xF190:  # VIN (Vehicle Identification Number)
+        print("[INFO] Processing VIN request")
+        time.sleep(0.1)  # Small delay
+
+        # Send multi-frame response for VIN
+        # First frame: includes service response 0x62, data ID 0xF190, and first bytes of VIN
+        send_can_frame(ARB_ID_RESPONSE, [0x10, 0x14, 0x62, 0xF1, 0x90, 0x55, 0x54, 0x43])
+        time.sleep(0.125)  # Delay between frames
+        
+        # Consecutive frames with remaining VIN bytes
+        send_can_frame(ARB_ID_RESPONSE, [0x21, 0x6E, 0x4D, 0x55, 0x53, 0x54, 0x57, 0x49])
+        time.sleep(0.125)
+        send_can_frame(ARB_ID_RESPONSE, [0x22,  0x4E, 0x48, 0x54, 0x42, 0x43, 0x54, 0x46])
+    else: 
+        # Invalid ID
+        print(f"[WARNING] Invalid data ID: 0x{data_id:04X}")
+        send_negative_response(0x22, 0x31)  # Request out of range
+
+# Helper function to send negative responses
+def send_negative_response(service_id, error_code):
+    """Send a UDS negative response with proper PCI"""
+    # PCI byte (0x03 = length 3 bytes following) + Negative Response (0x7F) + Service ID + Error Code
+    send_can_frame(ARB_ID_RESPONSE, [0x03, 0x7F, service_id, error_code])
+    print(f"[RESPONSE] Negative response for service 0x{service_id:02X}: Error 0x{error_code:02X}")
+
+# Handler function to process incoming CAN frames
 def handle_can_message(msg):
     """Process incoming CAN messages and handle UDS requests"""
     # Check if this is a request message (0x7E0)
@@ -96,7 +260,14 @@ def handle_can_message(msg):
         print(f"[RECV] ID: 0x{msg.arbitration_id:X} PCI: 0x{pci:02X} Service: 0x{service_id:02X} Data: {[hex(b) for b in data]}")
         
         # Handle specific service IDs
-        if service_id == 0x11:  # ECU Reset service
+        if service_id == 0x10:  # Diagnostic Session Control
+            print("[DEBUG] Processing Diagnostic Session Control request")
+            if data_length >= 2:  # Need service ID + session type
+                session_type = data[2]
+                handle_session_control(session_type)
+            else:
+                send_negative_response(service_id, 0x13)  # Incorrect message length
+        elif service_id == 0x11:  # ECU Reset service
             if data_length >= 2:  # Need at least service ID + reset type
                 reset_type = data[2]  # Reset type is the 3rd byte (after PCI and service ID)
                 handle_reset_response(reset_type)
@@ -111,68 +282,22 @@ def handle_can_message(msg):
             else:
                 # Not enough data for data ID
                 send_negative_response(service_id, 0x13)  # Incorrect message length
+        elif service_id == 0x27:  # Security Access
+            if data_length >= 2:  # Need service ID + subfunction
+                subfunction = data[2]
+                # Pass additional data if this is a sendKey request
+                if (subfunction % 2) == 0 and data_length >= 6:  # Even subfunction with key data
+                    handle_security_access(subfunction, data[3:7])  # Pass the 4-byte key
+                else:
+                    handle_security_access(subfunction)
+            else:
+                send_negative_response(service_id, 0x13)  # Incorrect message length
         else:
             # Unsupported service
             send_negative_response(service_id, 0x11)  # Service not supported
     else:
         print(f"[WARNING] Unsupported PCI format: 0x{pci:02X}")
         # Could handle multi-frame messages here if needed
-
-# 4. Function to handle reset responses
-def handle_reset_response(reset_type):
-    """Handle UDS ECU Reset service and send appropriate response"""
-    if reset_type == 0x01:  # Hard reset
-        print("[INFO] Processing Hard Reset request")
-        time.sleep(0.5)  # Simulate processing time
-        
-        # Send response with PCI byte (0x02 = length 2 bytes following)
-        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x01])
-    elif reset_type == 0x02:  # Key Off/On reset
-        print("[INFO] Processing Key Off/On Reset request")
-        time.sleep(0.5)  # Simulate processing time
-        
-        # Send response with PCI byte (0x02 = length 2 bytes following)
-        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x02])
-    elif reset_type == 0x03:  # Soft reset
-        print("[INFO] Processing Soft Reset request")
-        time.sleep(0.5)  # Simulate processing time
-        
-        # Send response with PCI byte (0x02 = length 2 bytes following)
-        send_can_frame(ARB_ID_RESPONSE, [0x02, 0x51, 0x03])
-    else:
-        # Invalid reset type
-        print(f"[WARNING] Invalid reset type: 0x{reset_type:02X}")
-        send_negative_response(0x11, 0x31)  # Request out of range
-
-# 5. Function to handle Read Data By ID requests
-def handle_read_data_id(data_id):
-    """Handle UDS Read Data By ID service and send appropriate response"""
-    print(f"[DEBUG] Processing data ID: 0x{data_id:04X}")
-    
-    if data_id == 0xF190:  # VIN (Vehicle Identification Number)
-        print("[INFO] Processing VIN request")
-        time.sleep(0.1)  # Small delay
-
-        # Send multi-frame response for VIN
-        # First frame: includes service response 0x62, data ID 0xF190, and first bytes of VIN
-        send_can_frame(ARB_ID_RESPONSE, [0x10, 0x14, 0x62, 0xF1, 0x90, 0x55, 0x54, 0x43])
-        time.sleep(0.125)  # Delay between frames
-        
-        # Consecutive frames with remaining VIN bytes
-        send_can_frame(ARB_ID_RESPONSE, [0x21, 0x6E, 0x4D, 0x55, 0x53, 0x54, 0x57, 0x49])
-        time.sleep(0.125)
-        send_can_frame(ARB_ID_RESPONSE, [0x22,  0x4E, 0x48, 0x54, 0x42, 0x43, 0x54, 0x46])
-    else: 
-        # Invalid ID
-        print(f"[WARNING] Invalid data ID: 0x{data_id:04X}")
-        send_negative_response(0x22, 0x31)  # Request out of range
-
-# Helper function to send negative responses
-def send_negative_response(service_id, error_code):
-    """Send a UDS negative response with proper PCI"""
-    # PCI byte (0x03 = length 3 bytes following) + Negative Response (0x7F) + Service ID + Error Code
-    send_can_frame(ARB_ID_RESPONSE, [0x03, 0x7F, service_id, error_code])
-    print(f"[RESPONSE] Negative response for service 0x{service_id:02X}: Error 0x{error_code:02X}")
 
 # Signal handler for clean exit
 def signal_handler(sig, frame):
