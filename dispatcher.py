@@ -5,14 +5,15 @@ from services.ecu_reset import handle_reset_response
 from services.read_data_by_id import handle_read_data_id
 from services.security_access import handle_security_access
 from services.negative_response import send_negative_response
+from services.read_memory_by_address import handle_read_memory_by_address
 
 def handle_can_message(msg):
     """Process incoming CAN messages and handle UDS requests"""
     # Enforce tester -> ECU arbitration ID (0x7E0)
     if msg.arbitration_id != ARB_ID_REQUEST:
-        print(f"[IGNORE] Unexpected CAN ID 0x{msg.arbitration_id:X}; "
-              f"expecting tester→ECU ID 0x{ARB_ID_REQUEST:X}")
-        return
+        # print(f"[IGNORE] Unexpected CAN ID 0x{msg.arbitration_id:X}; "
+              # f"expecting tester→ECU ID 0x{ARB_ID_REQUEST:X}")
+        return 0
 
     data = list(msg.data)
     if len(data) < 2:
@@ -25,7 +26,7 @@ def handle_can_message(msg):
         data_length = pci & 0x0F
 
         if len(data) < data_length + 1:
-            print(f"[WARNING] Invalid message length. PCI indicates {data_length} bytes but got {len(data)-1}")
+            # print(f"[WARNING] Invalid message length. PCI indicates {data_length} bytes but got {len(data)-1}")
             return
 
         service_id = data[1]
@@ -55,12 +56,24 @@ def handle_can_message(msg):
         elif service_id == 0x27:  # Security Access
             if data_length >= 2:
                 subfunction = data[2]
-                if (subfunction % 2) == 0 and data_length >= 6:
-                    handle_security_access(subfunction, data[3:7])
+                if (subfunction % 2) == 0:
+                    # sendKey: forward exactly the remaining bytes after [SID, subfn]
+                    payload_len = max(0, data_length - 2)
+                    key_bytes = data[3:3 + payload_len]
+                    handle_security_access(subfunction, key_bytes)
                 else:
+                    # requestSeed: no payload
                     handle_security_access(subfunction)
             else:
                 send_negative_response(service_id, 0x13)
+
+        elif service_id == 0x23:  # ReadMemoryByAddress
+            if data_length >= 2:
+                params = data[2: 1 + data_length]  # bytes after SID
+                handle_read_memory_by_address(params)
+            else:
+                send_negative_response(service_id, 0x13)
+
         else:
             send_negative_response(service_id, 0x11)
     else:
