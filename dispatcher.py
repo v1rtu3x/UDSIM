@@ -5,6 +5,7 @@ from services.ecu_reset import handle_reset_response
 from services.read_data_by_id import handle_read_data_id
 from services.security_access import handle_security_access
 from services.negative_response import send_negative_response
+from services.clear_dtc import handle_clear_dtc
 from services.read_memory_by_address import handle_read_memory_by_address
 
 def handle_can_message(msg):
@@ -50,6 +51,12 @@ def handle_can_message(msg):
                 data_id = (data[2] << 8) | data[3]
                 print(f"[INFO] Read Data ID request: 0x{data_id:04X}")
                 handle_read_data_id(data_id)
+            else:
+                send_negative_response(service_id, 0x13)
+        
+        elif service_id == 0x14:  # ClearDiagnosticInformation
+            if data_length >= 4:  # SID + 3 group bytes
+                handle_clear_dtc(data[2:5])
             else:
                 send_negative_response(service_id, 0x13)
 
