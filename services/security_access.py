@@ -82,8 +82,8 @@ def handle_security_access(subfunction, data=None):
         # DEBUG: return seed + expected key in positive response (non-UDS!)
         seed_bytes = _pack_be(seed, nbytes)
         key_bytes  = _pack_be(expected_key, nbytes)
-        payload_len = 2 + nbytes + nbytes
-        response = [payload_len, 0x67, 0x01] + seed_bytes + key_bytes
+        payload_len = 2 + nbytes
+        response = [payload_len, 0x67, 0x01] + seed_bytes
         send_can_frame(ARB_ID_RESPONSE, response)
         print(f"[RESPONSE][DEBUG] 0x67 0x01 SEED={_fmt_hex(seed, nbytes)} KEY={_fmt_hex(expected_key, nbytes)}")
         return
