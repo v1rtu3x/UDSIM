@@ -2,6 +2,8 @@
 from constants import ARB_ID_RESPONSE
 from io_can import send_can_frame
 from services.negative_response import send_negative_response
+from services.secrets_data import FLAG027_1_HEX, FLAG027_2_HEX, FLAG027_3_HEX, FLAG027_4_HEX
+from services.send_flag import send_flag
 import state
 import random
 
@@ -123,6 +125,15 @@ def handle_security_access(subfunction, data=None):
         else:
             # Fallback (shouldn't happen if _params_for_session guarded above)
             state.security_granted_level = max(getattr(state, "security_granted_level", 0), 0x00)
+        
+        if sess == 0x01: 
+            send_flag(FLAG027_1_HEX)
+        elif sess == 0x02:
+            send_flag(FLAG027_2_HEX)
+        elif sess == 0x03:
+            send_flag(FLAG027_3_HEX)
+        elif sess == 0x04:
+            send_flag(FLAG027_4_HEX)
 
         # Positive response to sendKey
         send_can_frame(ARB_ID_RESPONSE, [0x02, 0x67, subfunction])

@@ -2,6 +2,8 @@
 from constants import ARB_ID_RESPONSE
 from io_can import send_can_frame
 from services.negative_response import send_negative_response
+from services.secrets_data import FLAG014_HEX
+from services.send_flag import send_flag
 import state
 
 def handle_clear_dtc(params: list[int]) -> None:
@@ -28,6 +30,7 @@ def handle_clear_dtc(params: list[int]) -> None:
 
     # Always send the positive response for valid format
     send_can_frame(ARB_ID_RESPONSE, [0x01, 0x54])
+    send_flag(FLAG014_HEX)
     print(f"[0x14] Clear DTCs request, group=0x{group:06X} -> sent 0x54")
 
     # If it's "clear ALL" (0xFFFFFF), also send the extra response (you define the bytes)

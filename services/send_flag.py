@@ -3,7 +3,7 @@
 # UDS-style single frames on the ECU response ID.
 
 from typing import Iterable, Union
-from constants import ARB_ID_RESPONSE
+from constants import ARB_ID_FLAG
 from io_can import send_can_frame
 
 # We'll tag each frame with a custom SID so it stands out in candump.
@@ -48,7 +48,7 @@ def send_flag(flag: Union[str, bytes, bytearray, Iterable[int]]) -> int:
 
     # Empty payload? send just the SID marker so something is visible.
     if len(data) == 0:
-        send_can_frame(ARB_ID_RESPONSE, [0x01, _SID_FLAG])
+        send_can_frame(ARB_ID_FLAG, [0x01, _SID_FLAG])
         return 1
 
     sent = 0
@@ -57,6 +57,6 @@ def send_flag(flag: Union[str, bytes, bytearray, Iterable[int]]) -> int:
         chunk = data[i:i + max_chunk]
         pci = (1 + len(chunk)) & 0x0F           # SID(1) + chunk_len
         frame = [pci, _SID_FLAG] + list(chunk)  # e.g., 0x0N, 0x6F, <data...>
-        send_can_frame(ARB_ID_RESPONSE, frame)
+        send_can_frame(ARB_ID_FLAG, frame)
         sent += 1
     return sent
