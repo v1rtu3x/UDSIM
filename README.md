@@ -97,7 +97,7 @@ isotpsend -s 0x7E0 -d 0x7E8 vcan0 10 01
 isotpsend -s 0x7E0 -d 0x7E8 vcan0 22 F1 90
 ```
 
-**Send requests with raw CAN frames (********`cansend`****\*\*\*\*\*\*\*\*\*\*\*\*):**
+**Send requests with raw CAN frames `cansend`
 For short UDS requests (≤ 7 data bytes), you can craft **ISO‑TP Single Frames** and send them directly with `cansend`. The first byte is `0x0L`, where `L` is payload length. Pad to 8 bytes.
 
 ```bash
