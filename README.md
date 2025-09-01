@@ -15,11 +15,6 @@
 * [Configuration](#configuration)
 * [Service architecture](#service-architecture)
 * [Add a new UDS service](#add-a-new-uds-service)
-* [Logging](#logging)
-* [Troubleshooting](#troubleshooting)
-* [Limitations](#limitations)
-* [Roadmap ideas](#roadmap-ideas)
-* [License](#license)
 
 ---
 
